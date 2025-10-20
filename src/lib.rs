@@ -1,15 +1,19 @@
-use std::io::{Read, Write};
+use anyhow::{Result, bail};
+use std::{
+    collections::HashMap,
+    io::{Read, Write},
+};
 
 pub struct Interpreter<'a, R: Read, W: Write> {
     data_pointer: usize,
     program_counter: usize,
     memory: &'a mut [u8],
-    input: R,
-    output: W,
+    input: &'a mut R,
+    output: &'a mut W,
 }
 
 impl<'a, R: Read, W: Write> Interpreter<'a, R, W> {
-    pub fn new(memory: &'a mut [u8], input: R, output: W) -> Self {
+    pub fn new(memory: &'a mut [u8], input: &'a mut R, output: &'a mut W) -> Self {
         Interpreter {
             data_pointer: 0,
             program_counter: 0,
@@ -19,67 +23,74 @@ impl<'a, R: Read, W: Write> Interpreter<'a, R, W> {
         }
     }
 
-    pub fn interpret(&mut self, source: &[char]) -> std::io::Result<()> {
-        while self.program_counter < source.len() {
-            let c = source[self.program_counter];
+    pub fn interpret(&mut self, source: &[char]) -> Result<()> {
+        let mut jump_table = HashMap::new();
+        let mut open_brack_stack: Vec<usize> = Vec::new();
 
+        for (i, &c) in source.iter().enumerate() {
             match c {
+                '[' => {
+                    open_brack_stack.push(i);
+                }
+                ']' => {
+                    if let Some(opening) = open_brack_stack.pop() {
+                        jump_table.insert(opening, i);
+                        jump_table.insert(i, opening);
+                    } else {
+                        bail!("Unmatched closing bracket at position {}", i);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if !open_brack_stack.is_empty() {
+            bail!("Unmatched opening bracket at {:?}", open_brack_stack);
+        }
+
+        let data_pointer = &mut self.data_pointer;
+        let program_counter = &mut self.program_counter;
+
+        while *program_counter < source.len() {
+            let op = source[*program_counter];
+
+            match op {
                 '>' => {
-                    self.data_pointer = self.data_pointer.wrapping_add(1);
+                    *data_pointer = data_pointer.wrapping_add(1);
                 }
                 '<' => {
-                    self.data_pointer = self.data_pointer.wrapping_sub(1);
+                    *data_pointer = data_pointer.wrapping_sub(1);
                 }
                 '+' => {
-                    self.memory[self.data_pointer] = self.memory[self.data_pointer].wrapping_add(1);
+                    self.memory[*data_pointer] = self.memory[*data_pointer].wrapping_add(1);
                 }
                 '-' => {
-                    self.memory[self.data_pointer] = self.memory[self.data_pointer].wrapping_sub(1);
+                    self.memory[*data_pointer] = self.memory[*data_pointer].wrapping_sub(1);
                 }
                 '.' => {
-                    let val = self.memory[self.data_pointer];
+                    let val = self.memory[*data_pointer];
                     self.output.write_all(&[val])?;
                 }
                 ',' => {
                     let mut buf: [u8; 1] = [0];
                     self.input.read_exact(&mut buf)?;
-                    self.memory[self.data_pointer] = buf[0];
+                    self.memory[*data_pointer] = buf[0];
                 }
                 '[' => {
-                    if self.memory[self.data_pointer] == 0 {
-                        let mut stack = 1;
-
-                        while stack != 0 && self.program_counter < source.len() {
-                            self.program_counter += 1;
-                            if source[self.program_counter] == '[' {
-                                stack += 1;
-                            }
-                            if source[self.program_counter] == ']' {
-                                stack -= 1;
-                            }
-                        }
+                    if self.memory[*data_pointer] == 0 {
+                        *program_counter = *jump_table.get(program_counter).unwrap();
                     }
                 }
                 ']' => {
-                    if self.memory[self.data_pointer] != 0 {
-                        let mut stack = 1;
-
-                        while stack != 0 && self.program_counter != 0 {
-                            self.program_counter -= 1;
-                            if source[self.program_counter] == ']' {
-                                stack += 1;
-                            }
-                            if source[self.program_counter] == '[' {
-                                stack -= 1;
-                            }
-                        }
+                    if self.memory[*data_pointer] != 0 {
+                        *program_counter = *jump_table.get(program_counter).unwrap();
                     }
                 }
                 _ => {
                     // any other chars are considered comments and ignored.
                 }
             }
-            self.program_counter += 1;
+            *program_counter += 1;
         }
         Ok(())
     }
@@ -91,7 +102,6 @@ mod tests {
 
     struct TestCase<'a> {
         input: &'a [u8],
-        output: Vec<u8>,
         source: &'a str,
         memory: &'a mut [u8],
 
@@ -100,7 +110,7 @@ mod tests {
     }
 
     // This program comes from this link: https://en.wikipedia.org/wiki/Brainfuck
-    const HELLO_WORLD_FROM_WIKIPEDIA: &'static str = r#"
+    const HELLO_WORLD_FROM_WIKIPEDIA: &str = r#"
     [ This program prints "Hello World!" and a newline to the screen; its
       length is 106 active command characters. [It is not the shortest.]
 
@@ -151,7 +161,6 @@ mod tests {
         let test_cases = [
             TestCase {
                 input: &[],
-                output: Vec::new(),
                 source: "++++++++[>++++[>++>+++>+++>+<<<<-]>+>+>->>+[<]<-]>>.>---.+++++++..+++.>>.<-.<.+++.------.--------.>>+.",
                 memory: &mut [0; 10],
 
@@ -160,7 +169,6 @@ mod tests {
             },
             TestCase {
                 input: &[],
-                output: Vec::new(),
                 source: HELLO_WORLD_FROM_WIKIPEDIA,
                 memory: &mut [0; 10],
 
@@ -169,32 +177,45 @@ mod tests {
             },
             TestCase {
                 input: &[],
-                output: Vec::new(),
                 source: ">+++>++",
                 memory: &mut [0; 3],
                 expected_output: vec![],
                 expected_mem: &[0, 3, 2],
             },
             TestCase {
-                input: b"A",
-                output: Vec::new(),
+                input: &[b'A'],
                 source: ",.",
                 memory: &mut [0; 1],
                 expected_output: "A".as_bytes().to_vec(),
                 expected_mem: &[65],
             },
+            TestCase {
+                input: &[],
+                source: "[[][]",
+                memory: &mut [0; 5],
+                expected_output: "Unmatched opening bracket at [0]".as_bytes().to_vec(),
+                expected_mem: &[0, 0, 0, 0, 0],
+            },
         ];
 
         for tc in test_cases {
             let source = tc.source.chars().collect::<Vec<char>>();
-            let mut interpreter = Interpreter::new(tc.memory, tc.input, tc.output);
-            interpreter.interpret(&source).unwrap();
+            let mut output = Vec::new();
+            let mut input = tc.input;
+            let mut interpreter = Interpreter::new(tc.memory, &mut input, &mut output);
+
+            let result = interpreter.interpret(&source);
+
+            if let Err(e) = result {
+                output.write_all(e.to_string().as_bytes()).unwrap();
+            }
 
             assert_eq!(
-                interpreter.output, tc.expected_output,
+                String::from_utf8(output),
+                String::from_utf8(tc.expected_output),
                 "outputs do not match"
             );
-            assert_eq!(interpreter.memory, tc.expected_mem, "memory does not match");
+            assert_eq!(tc.memory, tc.expected_mem, "memory does not match");
         }
     }
 }

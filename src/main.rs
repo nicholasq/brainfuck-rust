@@ -13,11 +13,11 @@ fn main() {
     let source = fs::read_to_string(&args[1]).expect("Failed to read file");
     let source: Vec<char> = source.chars().collect();
 
-    let stdin = io::stdin();
+    let mut stdin = io::stdin().lock();
     let mut stdout = io::stdout();
     let mut memory = [0; 4096];
 
-    let mut interpreter = Interpreter::new(&mut memory, stdin.lock(), &mut stdout);
+    let mut interpreter = Interpreter::new(&mut memory, &mut stdin, &mut stdout);
     let result = interpreter.interpret(&source);
 
     if let Err(err) = result {
