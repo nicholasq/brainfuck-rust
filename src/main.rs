@@ -1,23 +1,28 @@
 use brainfuck_rust::Interpreter;
-use std::env;
+use clap::Parser;
 use std::fs;
 use std::io::{self};
 
-fn main() {
-    let args: Vec<String> = env::args().collect();
-    if args.len() != 2 {
-        eprintln!("Usage: {} <file>", args[0]);
-        return;
-    }
+#[derive(Parser)]
+#[command(author, version, about, long_about = None)]
+struct Cli {
+    #[arg(short = 'd', long = "debug", default_value_t = false)]
+    debug: bool,
 
-    let source = fs::read_to_string(&args[1]).expect("Failed to read file");
+    filename: String,
+}
+
+fn main() {
+    let cli = Cli::parse();
+
+    let source = fs::read_to_string(&cli.filename).expect("Failed to read file");
     let source: Vec<char> = source.chars().collect();
 
     let mut stdin = io::stdin().lock();
     let mut stdout = io::stdout();
-    let mut memory = [0; 4096];
+    let mut memory = [0; 30_000];
 
-    let mut interpreter = Interpreter::new(&mut memory, &mut stdin, &mut stdout);
+    let mut interpreter = Interpreter::new(&mut memory, &mut stdin, &mut stdout, cli.debug);
     let result = interpreter.interpret(&source);
 
     if let Err(err) = result {
